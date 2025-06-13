@@ -53,33 +53,15 @@ Example: [TOOL: calculate(2 + 2)]
         
         return actions
     
-    async def execute_actions(self, response: str):
-        """Execute actions including tool calls."""
-        actions = self._parse_agent_actions(response)
-        
-        for action_type, action_data in actions:
-            if action_type == 'TOOL':
-                # Execute tool
-                tool_name, args_str = action_data.split('|', 1)
-                await self.execute_tool(tool_name, args_str)
-            else:
-                # Handle other actions normally
-                await self._execute_single_action(action_type, action_data)
-    
     async def _execute_single_action(self, action_type: str, action_data: str):
-        """Execute a single non-tool action."""
-        if action_type == 'SPAWN':
-            await self.spawn(action_data)
-            await self.update_agent_list()
-        elif action_type == 'BROADCAST':
-            await self.broadcast(action_data)
-        elif action_type == 'MESSAGE':
-            agent_id, message = action_data.split('|', 1)
-            await self.message(agent_id, message)
-        elif action_type == 'WAIT':
-            await self.wait_for_messages(int(action_data))
-        elif action_type == 'TERMINATE':
-            await self.terminate(action_data)
+        """Extend parent's action execution to handle tool calls."""
+        if action_type == 'TOOL':
+            # Execute tool
+            tool_name, args_str = action_data.split('|', 1)
+            await self.execute_tool(tool_name, args_str)
+        else:
+            # Let parent handle all other actions
+            await super()._execute_single_action(action_type, action_data)
     
     async def execute_tool(self, tool_name: str, args_str: str):
         """Execute a tool and add result to context."""

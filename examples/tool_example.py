@@ -23,8 +23,17 @@ from herd_agents.tool_agent import ToolAgent
 def calculate(expression: str) -> str:
     """Evaluate a mathematical expression."""
     try:
-        # Safe evaluation of math expressions
-        result = eval(expression, {"__builtins__": {}}, {})
+        # Safe evaluation with basic math functions
+        safe_dict = {
+            "__builtins__": {},
+            "sum": sum,
+            "range": range,
+            "pow": pow,
+            "abs": abs,
+            "min": min,
+            "max": max
+        }
+        result = eval(expression, safe_dict)
         return str(result)
     except Exception as e:
         return f"Error: {e}"
@@ -37,7 +46,10 @@ def get_time() -> str:
 # Tool documentation that will be added to system prompt
 TOOL_DOCS = """
 1. calculate(expression) - Evaluate mathematical expressions
-   Example: [TOOL: calculate(2 + 2 * 3)]
+   Examples: 
+   - [TOOL: calculate(2 + 2 * 3)]
+   - [TOOL: calculate(sum(i**3 for i in range(1, 11)))]
+   Supports: basic math, sum(), range(), pow(), etc.
    Returns: The numerical result
 
 2. get_time() - Get the current date and time
@@ -55,10 +67,16 @@ async def main():
     # Create the agent manager
     manager = AgentManager()
     
-    # Create a tool-enabled agent with a mission that needs tools
+    # Create a tool-enabled agent with a mission that demonstrates spawning, calculation, and aggregation
     agent = ToolAgent(
-        agent_id="calculator",
-        mission="Calculate the sum of squares from 1 to 5 (1² + 2² + 3² + 4² + 5²) and tell me what time you finished",
+        agent_id="coordinator",
+        mission="""Calculate the sum of cubes for three ranges and find the grand total:
+        1. Range 1-10: calculate sum of n³ for each n
+        2. Range 11-20: calculate sum of n³ for each n  
+        3. Range 21-30: calculate sum of n³ for each n
+        
+        Spawn child agents to handle each range in parallel, then aggregate their results.
+        REPORT the final grand total and when you finished to the human.""",
         model_name="gemini-2.5-flash",
         tools=TOOLS,
         tool_docs=TOOL_DOCS
@@ -71,17 +89,21 @@ async def main():
     await manager.start()
     
     # Let it run
-    print("🤖 Tool-enabled agent starting...")
-    print(f"📋 Mission: {agent.mission}")
+    print("🤖 Swarm calculation with tools starting...")
+    print("📋 Mission: Calculate sum of cubes across ranges using parallel agents")
     print("🛠️  Available tools: calculate, get_time")
     print("-" * 50)
     
-    # Wait for completion
-    await manager.wait_for_convergence(timeout=30)
+    # Wait for completion (give more time for multi-agent coordination)
+    await manager.wait_for_convergence(timeout=60)
     
     # Stop the system
     await manager.stop()
-    print("\n✅ Done!")
+    
+    # Print final status
+    print("\n" + "="*50)
+    manager.print_status()
+    print("✅ Done!")
 
 if __name__ == "__main__":
     asyncio.run(main()) 

@@ -34,7 +34,12 @@ YOUR CAPABILITIES:
    Use when: Expecting responses from agents, need to synchronize
    Note: Waits forever until a message arrives
 
-5. TERMINATE - End your existence
+5. REPORT - Send important findings to human user
+   Format: [REPORT: <message>]
+   Example: [REPORT: Found the answer: 42]
+   Use when: Sharing final results, important discoveries, or progress with human
+
+6. TERMINATE - End your existence
    Format: [TERMINATE: <reason>]
    Example: [TERMINATE: Task complete, findings shared]
    Use when: Work is done, you're redundant, or reached dead end
@@ -83,6 +88,9 @@ class Agent:
         # Track other agents
         self.active_agents: List[str] = []
         
+        # Reports to human
+        self.reports: List[Dict] = []
+        
     def _build_system_prompt(self) -> str:
         """Build the static system prompt."""
         return AGENT_SYSTEM_PROMPT.format(
@@ -114,6 +122,11 @@ class Agent:
         wait_pattern = r'\[WAIT:\s*(\d+)\]'
         for match in re.finditer(wait_pattern, response):
             actions.append(('WAIT', match.group(1).strip()))
+        
+        # Parse REPORT commands
+        report_pattern = r'\[REPORT:\s*(.+?)\]'
+        for match in re.finditer(report_pattern, response):
+            actions.append(('REPORT', match.group(1).strip()))
         
         # Parse TERMINATE commands
         terminate_pattern = r'\[TERMINATE:\s*(.+?)\]'
@@ -154,24 +167,31 @@ class Agent:
         actions = self._parse_agent_actions(response)
         
         for action_type, action_data in actions:
-            if action_type == 'SPAWN':
-                await self.spawn(action_data)
-                # List agents right after spawn
-                await self.update_agent_list()
-                
-            elif action_type == 'BROADCAST':
-                await self.broadcast(action_data)
-                
-            elif action_type == 'MESSAGE':
-                agent_id, message = action_data.split('|', 1)
-                await self.message(agent_id, message)
-                
-            elif action_type == 'WAIT':
-                # Wait indefinitely for new messages (parameter is ignored but parsed for compatibility)
-                await self.wait_for_messages(int(action_data))
-                
-            elif action_type == 'TERMINATE':
-                await self.terminate(action_data)
+            await self._execute_single_action(action_type, action_data)
+    
+    async def _execute_single_action(self, action_type: str, action_data: str):
+        """Execute a single action. Can be extended by subclasses."""
+        if action_type == 'SPAWN':
+            await self.spawn(action_data)
+            # List agents right after spawn
+            await self.update_agent_list()
+            
+        elif action_type == 'BROADCAST':
+            await self.broadcast(action_data)
+            
+        elif action_type == 'MESSAGE':
+            agent_id, message = action_data.split('|', 1)
+            await self.message(agent_id, message)
+            
+        elif action_type == 'WAIT':
+            # Wait indefinitely for new messages (parameter is ignored but parsed for compatibility)
+            await self.wait_for_messages(int(action_data))
+            
+        elif action_type == 'REPORT':
+            await self.report(action_data)
+            
+        elif action_type == 'TERMINATE':
+            await self.terminate(action_data)
     
     async def spawn(self, mission: str) -> 'Agent':
         """Create a child agent with a specific mission."""
@@ -239,6 +259,19 @@ class Agent:
         
         await self.message_bus.publish(msg)
         self.messages_sent += 1
+    
+    async def report(self, message: str):
+        """Report findings to human user."""
+        report = {
+            "agent_id": self.id,
+            "message": message,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        self.reports.append(report)
+        
+        # Direct print to console with formatting
+        print(f"\n📊 [REPORT from {self.id}]: {message}\n")
     
     async def update_agent_list(self):
         """Update our knowledge of active agents."""
@@ -373,13 +406,14 @@ class Agent:
 
 Based on your mission, these messages, and tool updates, what should you do next?
 Consider: Are others already working on parts of this? Do you need to coordinate?
-Remember your capabilities: SPAWN, BROADCAST, MESSAGE, WAIT, TERMINATE."""
+Remember your capabilities: SPAWN, BROADCAST, MESSAGE, WAIT, REPORT, TERMINATE."""
         else:
             prompt = f"""{context}
 
 You're working on: {self.mission}
 
-What's your first step? Consider if you need to SPAWN helpers for parallel work."""
+What's your first step? Consider if you need to SPAWN helpers for parallel work.
+Remember to REPORT important findings to the human."""
         
         # Think and execute
         response = await self.think(prompt)
