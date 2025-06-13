@@ -22,5 +22,5 @@ __all__ = [
     "AgentManager", 
     "MessageBus",
     "chat_complete",
-    "API_DOCS"
+    "API_DOCS",
 ] 

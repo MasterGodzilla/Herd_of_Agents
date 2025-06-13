@@ -451,8 +451,8 @@ def chat_complete(message,
         # Configure thinking budget for models that support it
         thinking_models = ['gemini-2.5-pro-preview-05-06', 'gemini-2.5-flash-preview-05-20']
         if model_name in thinking_models:
-            # Use provided thinking_budget or default to 0 for 2.5 flash preview
-            budget = thinking_budget if thinking_budget is not None else (0 if model_name == 'gemini-2.5-flash-preview-05-20' else None)
+            # Use provided thinking_budget or default to None (let model use its default)
+            budget = thinking_budget
             if budget is not None:
                 config.thinking_config = types.ThinkingConfig(thinking_budget=budget)
 

@@ -11,7 +11,6 @@ This example shows how to:
 Run with: python examples/tool_example.py
 """
 
-import asyncio
 import sys
 import os
 
@@ -67,7 +66,7 @@ TOOLS = {
     "get_time": get_time
 }
 
-async def main():
+def main():
     # Create the agent manager
     manager = AgentManager()
     
@@ -81,16 +80,16 @@ async def main():
         
         Spawn child agents to handle each range in parallel, then aggregate their results (to you the main).
         PRINT the final grand total and when you finished to the human.""",
-        model_name="gemini-2.5-flash",
+        model_name="gemini-2.5-pro",
         tools=TOOLS,
         tool_docs=TOOL_DOCS
     )
     
     # Register the agent
-    await manager.register_agent(agent)
+    manager.register_agent(agent)
     
     # Start the system
-    await manager.start()
+    manager.start()
     
     # Let it run
     print("🤖 Swarm calculation with tools starting...")
@@ -99,10 +98,10 @@ async def main():
     print("-" * 50)
     
     # Wait for completion (give more time for multi-agent coordination)
-    await manager.wait_for_convergence(timeout=60)
+    manager.wait_for_convergence(timeout=60)
     
     # Stop the system
-    await manager.stop()
+    manager.stop()
     
     # Print final status
     print("\n" + "="*50)
@@ -110,4 +109,4 @@ async def main():
     print("✅ Done!")
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    main() 

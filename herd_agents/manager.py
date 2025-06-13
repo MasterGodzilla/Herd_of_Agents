@@ -1,4 +1,6 @@
-import asyncio
+import threading
+import queue
+import time
 from typing import Dict, List, Optional
 from datetime import datetime
 from .agent import Agent
@@ -6,12 +8,25 @@ from .message_bus import MessageBus
 from .api import chat_complete
 
 class AgentManager:
-    """Manages the lifecycle of multiple agents and their communication."""
+    """Manages the lifecycle of multiple agents in parallel threads."""
     
     def __init__(self):
-        self.agents: Dict[str, Agent] = {}
+        """Initialize manager for parallel execution."""
+        # Threading setup - no need for mp.Manager anymore
         self.message_bus = MessageBus()
-        self.tasks: Dict[str, asyncio.Task] = {}
+        
+        # Thread tracking
+        self.threads: Dict[str, threading.Thread] = {}
+        
+        # Manager queue for agent requests - regular queue
+        self.manager_queue = queue.Queue()
+        
+        # Agent registry - regular dict
+        self.agent_registry = {}
+        self.agents: Dict[str, Agent] = {}
+        
+        # Monitor thread
+        self.monitor_thread = None
         self.running = False
         
         # Agent summaries - shared knowledge to avoid repetition
@@ -22,51 +37,65 @@ class AgentManager:
         self.total_agents_died = 0
         self.start_time = None
     
-    async def register_agent(self, agent: Agent):
+    def register_agent(self, agent: Agent):
         """Register a new agent with the system."""
-        self.agents[agent.id] = agent
+        # Set up agent for parallel execution
         agent.message_bus = self.message_bus
+        agent.manager_queue = self.manager_queue
         agent.manager = self
         
         # Register with message bus
         self.message_bus.register_agent(agent.id)
         
-        # Initialize summary
+        # Update registries
+        self.agents[agent.id] = agent
+        self.agent_registry[agent.id] = {
+            'id': agent.id,
+            'mission': agent.mission,
+            'parent_id': agent.parent_id,
+            'alive': True
+        }
         self.agent_summaries[agent.id] = f"New agent working on: {agent.mission}"
         
-        # Start agent's lifecycle
+        # Start agent thread if manager is running
         if self.running:
-            task = asyncio.create_task(agent.lifecycle())
-            self.tasks[agent.id] = task
+            thread = threading.Thread(target=agent.run, name=f"Agent-{agent.id}")
+            thread.daemon = True  # Make threads daemon so they exit when main exits
+            thread.start()
+            self.threads[agent.id] = thread
         
         self.total_agents_created += 1
         print(f"[Manager] Registered agent {agent.id}: {agent.mission}")
     
-    async def unregister_agent(self, agent_id: str):
+    def unregister_agent(self, agent_id: str):
         """Remove agent from the system."""
         if agent_id in self.agents:
             # Generate final summary before removing
-            await self.update_agent_summary(agent_id)
+            self.update_agent_summary(agent_id)
             
-            # Cancel task if running
-            if agent_id in self.tasks:
-                self.tasks[agent_id].cancel()
-                del self.tasks[agent_id]
+            # Thread cleanup
+            if agent_id in self.threads:
+                thread = self.threads[agent_id]
+                # Threads can't be forcefully terminated in Python
+                # The agent should terminate itself gracefully
+                del self.threads[agent_id]
             
-            # Unregister from message bus
+            # Update registry
+            if agent_id in self.agent_registry:
+                del self.agent_registry[agent_id]
+            
+            # Common cleanup
             self.message_bus.unregister_agent(agent_id)
-            
-            # Remove from agents dict
             del self.agents[agent_id]
             
             self.total_agents_died += 1
             print(f"[Manager] Unregistered agent {agent_id}")
     
-    async def get_agent_summary(self, agent_id: str) -> str:
+    def get_agent_summary(self, agent_id: str) -> str:
         """Get the summary for an agent."""
         return self.agent_summaries.get(agent_id, "No summary available")
     
-    async def update_agent_summary(self, agent_id: str):
+    def update_agent_summary(self, agent_id: str):
         """Update an agent's summary using a separate LLM call."""
         if agent_id not in self.agents:
             return
@@ -112,30 +141,66 @@ Focus on: What has been discovered? What is being worked on now? What decisions 
                     if a.id != other_agent.id
                 ]
     
-    async def create_genesis_agent(self, mission: str, model_name: str = "gemini-2.5-flash") -> Agent:
+    def create_genesis_agent(self, mission: str, model_name: str = "gemini-2.5-flash") -> Agent:
         """Create the first agent to bootstrap the system."""
         genesis = Agent(
             agent_id="genesis",
             mission=mission,
             model_name=model_name
         )
-        await self.register_agent(genesis)
+        self.register_agent(genesis)
         return genesis
     
-    async def start(self):
+    def start(self):
         """Start all agent lifecycles."""
         self.running = True
         self.start_time = datetime.now()
         
+        # Start monitor thread
+        self.monitor_thread = threading.Thread(target=self.monitor, name="Manager-Monitor")
+        self.monitor_thread.daemon = True
+        self.monitor_thread.start()
+        
         # Start all existing agents
         for agent in self.agents.values():
-            if agent.id not in self.tasks:
-                task = asyncio.create_task(agent.lifecycle())
-                self.tasks[agent.id] = task
+            thread = threading.Thread(target=agent.run, name=f"Agent-{agent.id}")
+            thread.daemon = True
+            thread.start()
+            self.threads[agent.id] = thread
         
         print(f"[Manager] Started with {len(self.agents)} agents")
     
-    async def stop(self):
+    def monitor(self):
+        """Monitor manager queue for agent requests."""
+        while self.running:
+            try:
+                request = self.manager_queue.get(timeout=0.1)
+                
+                if request['type'] == 'spawn':
+                    # Dynamically import and create the agent class
+                    module_name = request.get('agent_class_module', 'herd_agents.agent')
+                    class_name = request.get('agent_class_name', 'Agent')
+                    
+                    # Import the module and get the class
+                    import importlib
+                    module = importlib.import_module(module_name)
+                    agent_class = getattr(module, class_name)
+                    
+                    # Create agent using the class's factory method
+                    child = agent_class.from_spawn_data(request)
+                    self.register_agent(child)
+                    
+                elif request['type'] == 'terminate':
+                    # Clean up terminated agent
+                    agent_id = request['agent_id']
+                    self.unregister_agent(agent_id)
+                    
+            except queue.Empty:
+                pass
+            except Exception as e:
+                print(f"[Manager] Error in monitor: {e}")
+    
+    def stop(self):
         """Gracefully stop all agents."""
         self.running = False
         
@@ -146,19 +211,19 @@ Focus on: What has been discovered? What is being worked on now? What decisions 
             "content": "SYSTEM SHUTDOWN",
             "timestamp": datetime.now().isoformat()
         }
-        await self.message_bus.publish(stop_msg)
+        self.message_bus.publish_sync(stop_msg)
         
         # Wait a bit for agents to terminate gracefully
-        await asyncio.sleep(1)
+        time.sleep(1)
         
-        # Cancel remaining tasks
-        for task in self.tasks.values():
-            if not task.done():
-                task.cancel()
+        # Stop monitor thread
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=1)
         
-        # Wait for all tasks to complete
-        if self.tasks:
-            await asyncio.gather(*self.tasks.values(), return_exceptions=True)
+        # Wait for threads to finish
+        for thread in self.threads.values():
+            if thread.is_alive():
+                thread.join(timeout=1)
         
         print(f"[Manager] Stopped. Total agents created: {self.total_agents_created}, died: {self.total_agents_died}")
     
@@ -214,7 +279,7 @@ Focus on: What has been discovered? What is being worked on now? What decisions 
         
         print("========================\n")
     
-    async def wait_for_convergence(self, timeout: Optional[float] = None) -> bool:
+    def wait_for_convergence(self, timeout: Optional[float] = None) -> bool:
         """Wait for system to converge or timeout."""
         start = datetime.now()
         
@@ -229,4 +294,4 @@ Focus on: What has been discovered? What is being worked on now? What decisions 
                 print("[Manager] Timeout reached")
                 return False
             
-            await asyncio.sleep(0.5) 
+            time.sleep(0.5) 

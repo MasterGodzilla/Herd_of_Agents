@@ -1,10 +1,11 @@
-import asyncio
 import uuid
 import re
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from .api import chat_complete
 import os
+import time
+import queue
 
 DEBUG=True
 
@@ -58,18 +59,20 @@ Parent: {parent_id}
 """
 
 class Agent:
-    """Basic autonomous agent that can think, spawn, communicate, and die."""
+    """Autonomous agent that can think, spawn, communicate, and die."""
     
     def __init__(self, 
                  agent_id: Optional[str] = None,
                  parent_id: Optional[str] = None,
                  mission: str = "General assistant",
-                 model_name: str = "gemini-2.5-flash"):
+                 model_name: str = "gemini-2.5-pro",
+                 manager_queue: Optional[queue.Queue] = None):
         self.id = agent_id or str(uuid.uuid4())[:8]
         self.parent_id = parent_id
         self.children_ids: List[str] = []
         self.mission = mission
         self.model_name = model_name
+        self.manager_queue = manager_queue
         
         # Lifecycle tracking
         self.alive = True
@@ -81,6 +84,7 @@ class Agent:
         
         # Communication
         self.message_bus = None  # Will be set by AgentManager
+        self.manager = None  # Will be set by AgentManager
         self.inbox: List[Dict] = []  # ALL messages kept
         
         # Tool updates (local to this agent)
@@ -92,6 +96,18 @@ class Agent:
         # Output to human
         self.prints: List[Dict] = []  # Output to human
         
+    @classmethod
+    def from_spawn_data(cls, spawn_data: Dict) -> 'Agent':
+        """Factory method to create agent from spawn data.
+        Subclasses should override this to handle their specific parameters."""
+        return cls(
+            agent_id=spawn_data['child_id'],
+            parent_id=spawn_data['parent_id'],
+            mission=spawn_data['mission'],
+            model_name=spawn_data.get('model_name', 'gemini-2.5-pro'),
+            manager_queue=spawn_data.get('manager_queue')
+        )
+    
     def _build_system_prompt(self) -> str:
         """Build the static system prompt."""
         return AGENT_SYSTEM_PROMPT.format(
@@ -136,7 +152,7 @@ class Agent:
         
         return actions
     
-    async def think(self, prompt: str) -> str:
+    def think(self, prompt: str) -> str:
         """Core thinking - makes an LLM call."""
         messages = []
         
@@ -160,69 +176,102 @@ class Agent:
         self.context_history.append({"role": "assistant", "content": response})
 
         if DEBUG:
-            print ()
+            print(f"[{self.id}] THINK: {response}")
         
         return response
     
-    async def execute_actions(self, response: str):
+    def execute_actions(self, response: str):
         """Parse and execute actions from agent response."""
         actions = self._parse_agent_actions(response)
         
         for action_type, action_data in actions:
-            await self._execute_single_action(action_type, action_data)
+            self._execute_single_action(action_type, action_data)
     
-    async def _execute_single_action(self, action_type: str, action_data: str):
+    def _execute_single_action(self, action_type: str, action_data: str):
         """Execute a single action. Can be extended by subclasses."""
         if action_type == 'SPAWN':
-            await self.spawn(action_data)
+            self.spawn(action_data)
             # List agents right after spawn
-            await self.update_agent_list()
+            self.update_agent_list()
             
         elif action_type == 'BROADCAST':
-            await self.broadcast(action_data)
+            self.broadcast(action_data)
             
         elif action_type == 'MESSAGE':
             agent_id, message = action_data.split('|', 1)
-            await self.message(agent_id, message)
+            self.message(agent_id, message)
             
         elif action_type == 'WAIT':
             # Wait indefinitely for new messages (parameter is ignored but parsed for compatibility)
-            await self.wait_for_messages(int(action_data))
+            self.wait_for_messages(int(action_data))
             
         elif action_type == 'PRINT':
-            await self.print_to_human(action_data)
+            self.print_to_human(action_data)
             
         elif action_type == 'TERMINATE':
-            await self.terminate(action_data)
+            self.terminate(action_data)
     
-    async def spawn(self, mission: str) -> 'Agent':
+    def spawn(self, mission: str) -> 'Agent':
         """Create a child agent with a specific mission."""
-        child = Agent(
-            parent_id=self.id,
-            mission=mission,
-            model_name=self.model_name
-        )
-        
-        self.children_ids.append(child.id)
-        
-        # Register with manager
-        if hasattr(self, 'manager') and self.manager:
-            await self.manager.register_agent(child)
-        
-        return child
+        if self.manager_queue:
+            # In parallel mode, request manager to spawn
+            child_id = str(uuid.uuid4())[:8]
+            self.children_ids.append(child_id)
+            
+            # Include agent class information for proper reconstruction
+            spawn_data = {
+                'type': 'spawn',
+                'parent_id': self.id,
+                'child_id': child_id,
+                'mission': mission,
+                'model_name': self.model_name,
+                'agent_class_module': self.__class__.__module__,
+                'agent_class_name': self.__class__.__name__,
+                'manager_queue': self.manager_queue
+            }
+            
+            # Let subclasses add their specific data
+            spawn_data.update(self._get_spawn_data())
+            
+            self.manager_queue.put(spawn_data)
+            return None  # Manager will handle creation
+        else:
+            # Async mode - create directly
+            child = Agent(
+                parent_id=self.id,
+                mission=mission,
+                model_name=self.model_name,
+                manager_queue=self.manager_queue
+            )
+            
+            self.children_ids.append(child.id)
+            
+            # Register with manager
+            if hasattr(self, 'manager') and self.manager:
+                self.manager.register_agent(child)
+            
+            return child
     
-    async def terminate(self, reason: str = "Task complete"):
+    def terminate(self, reason: str = "Task complete"):
         """Gracefully terminate this agent."""
         if not self.alive:
             return
             
         self.alive = False
         
-        # Unregister from manager
-        if hasattr(self, 'manager') and self.manager:
-            await self.manager.unregister_agent(self.id)
+        if self.manager_queue:
+            # Notify manager via queue
+            self.manager_queue.put({
+                'type': 'terminate',
+                'agent_id': self.id,
+                'reason': reason
+            })
+        else:
+            # Unregister from manager directly
+            if hasattr(self, 'manager') and self.manager:
+                self.manager.unregister_agent(self.id)
     
-    async def broadcast(self, message: str):
+    def broadcast(self, message: str):
         """Broadcast message to all agents."""
         if not self.message_bus:
             if DEBUG:
@@ -240,10 +289,10 @@ class Agent:
         if DEBUG:
             print(f"[{self.id}] BROADCAST: {message}")
         
-        await self.message_bus.publish(msg)
+        self.message_bus.publish_sync(msg)
         self.messages_sent += 1
     
-    async def message(self, agent_id: str, content: str):
+    def message(self, agent_id: str, content: str):
         """Send direct message to specific agent."""
         if not self.message_bus:
             return
@@ -259,24 +308,22 @@ class Agent:
         if DEBUG:
             print(f"[{self.id}] MESSAGE to {agent_id}: {content}")
         
-        await self.message_bus.publish(msg)
+        self.message_bus.publish_sync(msg)
         self.messages_sent += 1
     
-
-    
-    async def update_agent_list(self):
+    def update_agent_list(self):
         """Update our knowledge of active agents."""
         if hasattr(self, 'manager') and self.manager:
             active = self.manager.get_active_agents()
             self.active_agents = [f"{a.id} ({a.mission[:30]}...)" for a in active if a.id != self.id]
     
-    async def check_messages(self) -> List[Dict]:
+    def check_messages(self) -> List[Dict]:
         """Check for new messages."""
         if not self.message_bus:
             return []
             
         # Get all pending messages
-        new_messages = await self.message_bus.get_messages(self.id)
+        new_messages = self.message_bus.get_messages_sync(self.id)
         
         if new_messages:
             self.inbox.extend(new_messages)
@@ -301,55 +348,59 @@ class Agent:
         if DEBUG:
             print(f"[{self.id}] Tool update - {tool_name}: {status} - {message[:100]}...")
     
-    async def wait_for_messages(self, wait_seconds: int):
-        """Wait indefinitely for new messages. Continue monitoring system state."""
+    def wait_for_messages(self, wait_seconds: int):
+        """Wait indefinitely for new messages - blocks until message arrives."""
         # Note: wait_seconds parameter is ignored but kept for compatibility
         
         if DEBUG:
             print(f"[{self.id}] Waiting for messages...")
         
-        check_count = 0
+        # Block on the queue directly - efficient OS-level blocking
+        if self.id in self.message_bus.agent_queues:
+            q = self.message_bus.agent_queues[self.id]
+            try:
+                # Block until we get a message
+                msg = q.get(block=True)
+                self.inbox.append(msg)
+                if DEBUG:
+                    print(f"[{self.id}] Received message, resuming")
+                return
+            except Exception as e:
+                if DEBUG:
+                    print(f"[{self.id}] Error waiting for messages: {e}")
+        
+        # Fallback: poll for messages
         while True:
-            # Check for new messages from agents
-            new_messages = await self.check_messages()
-            
-            # Resume if we got messages
+            new_messages = self.check_messages()
             if new_messages:
                 if DEBUG:
                     print(f"[{self.id}] Received {len(new_messages)} message(s), resuming")
                 return
-            
-            # Update agent list every 20 checks (2 seconds)
-            check_count += 1
-            if check_count % 20 == 0:
-                await self.update_agent_list()
-            
-            # Small sleep to avoid busy waiting
-            await asyncio.sleep(0.1)
+            time.sleep(0.1)
     
-    async def lifecycle(self):
+    def lifecycle(self):
         """Main agent loop."""
         # Initial setup
-        await self.update_agent_list()
+        self.update_agent_list()
         
         while self.alive:
             # Check messages
-            await self.check_messages()
+            self.check_messages()
             
             # Main work cycle
-            await self.work_cycle()
+            self.work_cycle()
             
             # Yield control
-            await asyncio.sleep(0.1)
+            time.sleep(0.1)
     
-    async def work_cycle(self):
+    def work_cycle(self):
         """Process messages and decide next action."""
         # Update agent list every cycle to keep it current
         if not hasattr(self, '_cycle_count'):
             self._cycle_count = 0
         self._cycle_count += 1
         
-        await self.update_agent_list()
+        self.update_agent_list()
         
         # Get recent unique messages - KEEP FULL CONTENT
         seen_agents = set()
@@ -407,10 +458,10 @@ What's your first step? Consider if you need to SPAWN helpers for parallel work.
 Remember to PRINT important findings to the human."""
         
         # Think and execute
-        response = await self.think(prompt)
-        await self.execute_actions(response) 
+        response = self.think(prompt)
+        self.execute_actions(response) 
 
-    async def print_to_human(self, message: str):
+    def print_to_human(self, message: str):
         """Print output to human user."""
         output = {
             "agent_id": self.id,
@@ -421,4 +472,21 @@ Remember to PRINT important findings to the human."""
         self.prints.append(output)
         
         # Direct print to console with formatting
-        print(f"\n📊 [OUTPUT from {self.id}]: {message}\n") 
+        print(f"\n📊 [OUTPUT from {self.id}]: {message}\n")
+    
+    def run(self):
+        """Entry point for agent process."""
+        try:
+            if DEBUG:
+                print(f"[{self.id}] Starting agent process")
+            self.lifecycle()
+        except Exception as e:
+            if DEBUG:
+                print(f"[{self.id}] Agent crashed: {e}")
+            import traceback
+            traceback.print_exc() 
+
+    def _get_spawn_data(self) -> Dict:
+        """Get additional spawn data for this agent type.
+        Subclasses should override this to include their specific parameters."""
+        return {} 

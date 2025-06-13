@@ -1,38 +1,56 @@
-import asyncio
 import os
-from typing import Dict, List
-from collections import defaultdict
+from typing import Dict, List, Optional
 from datetime import datetime
+import threading
+import queue
 
-DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+# DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+DEBUG=True
 
 class MessageBus:
-    """Simple async message bus for agent communication."""
+    """Message bus for parallel agent communication using threading queues."""
     
     def __init__(self):
-        # Messages queue for each agent
-        self.agent_queues: Dict[str, asyncio.Queue] = {}
+        """
+        Initialize message bus for parallel execution.
         
-        # Global message history (limited)
-        self.message_history: List[Dict] = []
+        No need for mp.Manager anymore with threading.
+        """
+        self.agent_queues: Dict[str, queue.Queue] = {}
+        self.message_history = []
+        self.lock = threading.Lock()
         self.max_history = 1000
-        
+    
     def register_agent(self, agent_id: str):
         """Register a new agent with the message bus."""
-        if agent_id not in self.agent_queues:
-            self.agent_queues[agent_id] = asyncio.Queue()
+        with self.lock:
+            if agent_id not in self.agent_queues:
+                self.agent_queues[agent_id] = queue.Queue()
+                if DEBUG:
+                    print(f"[MessageBus] Registered agent {agent_id}")
     
     def unregister_agent(self, agent_id: str):
         """Remove agent from message bus."""
-        if agent_id in self.agent_queues:
-            del self.agent_queues[agent_id]
+        with self.lock:
+            if agent_id in self.agent_queues:
+                # Clear queue first
+                q = self.agent_queues[agent_id]
+                while not q.empty():
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        break
+                del self.agent_queues[agent_id]
+                if DEBUG:
+                    print(f"[MessageBus] Unregistered agent {agent_id}")
     
-    async def publish(self, message: Dict):
+    def publish(self, message: Dict):
         """Publish a message to the bus."""
-        # Add to history
-        self.message_history.append(message)
-        if len(self.message_history) > self.max_history:
-            self.message_history.pop(0)
+        with self.lock:
+            # Add to history
+            self.message_history.append(message)
+            if len(self.message_history) > self.max_history:
+                self.message_history.pop(0)
         
         # Route message
         to = message.get('to', 'broadcast')
@@ -40,50 +58,70 @@ class MessageBus:
         
         if to == 'broadcast':
             # Send to all agents except sender
-            for agent_id in self.agent_queues:
+            with self.lock:
+                agent_ids = list(self.agent_queues.keys())
+                
+            for agent_id in agent_ids:
                 if agent_id != from_agent:
-                    await self._deliver_to_agent(agent_id, message)
+                    self._deliver_to_agent(agent_id, message)
         else:
-            # Direct message - check if delivery succeeds
-            delivered = await self._deliver_to_agent(to, message)
+            # Direct message
+            delivered = self._deliver_to_agent(to, message)
             
-            # If delivery failed and sender exists, notify them
-            if not delivered and from_agent and from_agent in self.agent_queues:
+            # If delivery failed, notify sender
+            if not delivered and from_agent:
                 if DEBUG:
                     print(f"[MessageBus] Delivery failed: {from_agent} -> {to} (agent not found)")
-                
+                    
                 failure_notice = {
                     "from": "system",
                     "to": from_agent,
-                    "content": f"DELIVERY FAILED: Agent {to} is not active. Your message was not delivered.",
-                    "timestamp": datetime.now().isoformat(),
-                    "failed_message": message.get("content", "")[:100] + "..."
+                    "content": f"DELIVERY FAILED: Agent {to} is not active.",
+                    "timestamp": datetime.now().isoformat()
                 }
-                # Deliver failure notice directly without adding to history
-                await self._deliver_to_agent(from_agent, failure_notice)
+                self._deliver_to_agent(from_agent, failure_notice)
     
-    async def _deliver_to_agent(self, agent_id: str, message: Dict) -> bool:
-        """Deliver message to specific agent's queue. Returns True if delivered."""
-        if agent_id in self.agent_queues:
-            # Non-blocking put
-            self.agent_queues[agent_id].put_nowait(message)
-            return True
+    def publish_sync(self, message: Dict):
+        """Alias for publish() for backward compatibility."""
+        return self.publish(message)
+    
+    def _deliver_to_agent(self, agent_id: str, message: Dict) -> bool:
+        """Deliver message to specific agent's queue."""
+        with self.lock:
+            if agent_id in self.agent_queues:
+                try:
+                    self.agent_queues[agent_id].put_nowait(message)
+                    return True
+                except queue.Full:
+                    if DEBUG:
+                        print(f"[MessageBus] Queue full for {agent_id}")
+                    return False
         return False
     
-    async def get_messages(self, agent_id: str) -> List[Dict]:
-        """Get all pending messages for an agent (non-blocking)."""
-        if agent_id not in self.agent_queues:
-            return []
-        
+    def get_messages(self, agent_id: str) -> List[Dict]:
+        """Get all pending messages for an agent."""
         messages = []
-        queue = self.agent_queues[agent_id]
         
-        # Get all messages currently in queue
-        while not queue.empty():
-            messages.append(queue.get_nowait())
+        with self.lock:
+            if agent_id not in self.agent_queues:
+                return messages
+            q = self.agent_queues[agent_id]
+        
+        # Get messages without holding lock
+        while True:
+            try:
+                msg = q.get_nowait()
+                messages.append(msg)
+            except queue.Empty:
+                break
         
         return messages
     
+    def get_messages_sync(self, agent_id: str) -> List[Dict]:
+        """Alias for get_messages() for backward compatibility."""
+        return self.get_messages(agent_id)
+    
     def get_history(self, limit: int = 100) -> List[Dict]:
         """Get message history."""
-        return self.message_history[-limit:] 
+        with self.lock:
+            return list(self.message_history[-limit:]) 
