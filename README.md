@@ -19,7 +19,7 @@ Agents can:
 2. **BROADCAST** - Send messages to all agents  
 3. **MESSAGE** - Direct message specific agents
 4. **WAIT** - Pause execution
-5. **REPORT** - Send findings directly to human user
+5. **PRINT** - Send output directly to human user (console)
 6. **TERMINATE** - End their existence
 
 ### Key Components

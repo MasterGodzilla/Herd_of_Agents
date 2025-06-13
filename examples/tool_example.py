@@ -14,6 +14,10 @@ Run with: python examples/tool_example.py
 import asyncio
 import sys
 import os
+
+# Set DEBUG before imports
+os.environ["DEBUG"] = "true"
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from herd_agents import AgentManager
@@ -38,7 +42,7 @@ def calculate(expression: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
-def get_time() -> str:
+def get_time(args: str = "") -> str:
     """Get the current time."""
     from datetime import datetime
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -75,8 +79,8 @@ async def main():
         2. Range 11-20: calculate sum of n³ for each n  
         3. Range 21-30: calculate sum of n³ for each n
         
-        Spawn child agents to handle each range in parallel, then aggregate their results.
-        REPORT the final grand total and when you finished to the human.""",
+        Spawn child agents to handle each range in parallel, then aggregate their results (to you the main).
+        PRINT the final grand total and when you finished to the human.""",
         model_name="gemini-2.5-flash",
         tools=TOOLS,
         tool_docs=TOOL_DOCS

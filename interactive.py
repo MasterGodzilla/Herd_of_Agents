@@ -8,7 +8,7 @@ os.environ["DEBUG"] = "true"
 import asyncio
 import sys
 from datetime import datetime
-from agent_manager import AgentManager
+from herd_agents import AgentManager
 
 async def monitor_system(manager: AgentManager, interval: float = 5.0):
     """Periodically print system status."""

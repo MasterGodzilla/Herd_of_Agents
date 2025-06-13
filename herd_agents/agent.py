@@ -6,7 +6,7 @@ from datetime import datetime
 from .api import chat_complete
 import os
 
-DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+DEBUG=True
 
 # Static system prompt that explains agent capabilities
 AGENT_SYSTEM_PROMPT = """You are an autonomous agent in a multi-agent system. You can spawn other agents, communicate, and terminate yourself.
@@ -34,10 +34,11 @@ YOUR CAPABILITIES:
    Use when: Expecting responses from agents, need to synchronize
    Note: Waits forever until a message arrives
 
-5. REPORT - Send important findings to human user
-   Format: [REPORT: <message>]
-   Example: [REPORT: Found the answer: 42]
-   Use when: Sharing final results, important discoveries, or progress with human
+5. PRINT - Send output to human user (console)
+   Format: [PRINT: <message>]
+   Example: [PRINT: Found the answer: 42]
+   Use when: Displaying results, important discoveries, or progress to human
+   Note: PRINT does not send messages to other agents - use BROADCAST or MESSAGE for that
 
 6. TERMINATE - End your existence
    Format: [TERMINATE: <reason>]
@@ -88,8 +89,8 @@ class Agent:
         # Track other agents
         self.active_agents: List[str] = []
         
-        # Reports to human
-        self.reports: List[Dict] = []
+        # Output to human
+        self.prints: List[Dict] = []  # Output to human
         
     def _build_system_prompt(self) -> str:
         """Build the static system prompt."""
@@ -123,10 +124,10 @@ class Agent:
         for match in re.finditer(wait_pattern, response):
             actions.append(('WAIT', match.group(1).strip()))
         
-        # Parse REPORT commands
-        report_pattern = r'\[REPORT:\s*(.+?)\]'
-        for match in re.finditer(report_pattern, response):
-            actions.append(('REPORT', match.group(1).strip()))
+        # Parse PRINT commands
+        print_pattern = r'\[PRINT:\s*(.+?)\]'
+        for match in re.finditer(print_pattern, response):
+            actions.append(('PRINT', match.group(1).strip()))
         
         # Parse TERMINATE commands
         terminate_pattern = r'\[TERMINATE:\s*(.+?)\]'
@@ -158,7 +159,8 @@ class Agent:
         self.context_history.append({"role": "user", "content": prompt})
         self.context_history.append({"role": "assistant", "content": response})
 
-        
+        if DEBUG:
+            print ()
         
         return response
     
@@ -187,8 +189,8 @@ class Agent:
             # Wait indefinitely for new messages (parameter is ignored but parsed for compatibility)
             await self.wait_for_messages(int(action_data))
             
-        elif action_type == 'REPORT':
-            await self.report(action_data)
+        elif action_type == 'PRINT':
+            await self.print_to_human(action_data)
             
         elif action_type == 'TERMINATE':
             await self.terminate(action_data)
@@ -260,18 +262,7 @@ class Agent:
         await self.message_bus.publish(msg)
         self.messages_sent += 1
     
-    async def report(self, message: str):
-        """Report findings to human user."""
-        report = {
-            "agent_id": self.id,
-            "message": message,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        self.reports.append(report)
-        
-        # Direct print to console with formatting
-        print(f"\n📊 [REPORT from {self.id}]: {message}\n")
+
     
     async def update_agent_list(self):
         """Update our knowledge of active agents."""
@@ -406,15 +397,28 @@ class Agent:
 
 Based on your mission, these messages, and tool updates, what should you do next?
 Consider: Are others already working on parts of this? Do you need to coordinate?
-Remember your capabilities: SPAWN, BROADCAST, MESSAGE, WAIT, REPORT, TERMINATE."""
+Remember your capabilities: SPAWN, BROADCAST, MESSAGE, WAIT, PRINT, TERMINATE."""
         else:
             prompt = f"""{context}
 
 You're working on: {self.mission}
 
 What's your first step? Consider if you need to SPAWN helpers for parallel work.
-Remember to REPORT important findings to the human."""
+Remember to PRINT important findings to the human."""
         
         # Think and execute
         response = await self.think(prompt)
         await self.execute_actions(response) 
+
+    async def print_to_human(self, message: str):
+        """Print output to human user."""
+        output = {
+            "agent_id": self.id,
+            "message": message,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        self.prints.append(output)
+        
+        # Direct print to console with formatting
+        print(f"\n📊 [OUTPUT from {self.id}]: {message}\n") 
