@@ -29,7 +29,45 @@ Agents can:
 - `agent_manager.py` - Manages agent lifecycles and maintains summaries
 - `api.py` - Unified interface for multiple LLM providers
 
-## Usage
+## Installation & Usage
+
+### Installation
+
+```bash
+# Install the package in development mode
+pip install -e .
+
+# Or install dependencies directly
+pip install -r requirements.txt
+```
+
+### Quick Start
+
+```python
+# Using the modularized package
+import asyncio
+from herd_agents import AgentManager
+
+async def main():
+    manager = AgentManager()
+    agent = await manager.create_genesis_agent(
+        mission="Write a short poem about coding"
+    )
+    await manager.start()
+    await manager.wait_for_convergence(timeout=30)
+    await manager.stop()
+
+asyncio.run(main())
+```
+
+### Simple Example
+
+```bash
+# Run the simple example
+python examples/simple_example.py
+```
+
+### Legacy Usage (direct files)
 
 ```python
 # Run interactive mode (recommended for testing)
