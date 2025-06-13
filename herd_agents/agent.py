@@ -16,7 +16,7 @@ YOUR CAPABILITIES:
 
 1. SPAWN - Create child agents for subtasks
    Format: [SPAWN: <mission description>]
-   Example: [SPAWN: Research OpenAI's latest models]
+   Example: [SPAWN: Say hello to the other agent]
    Use when: Task is complex, needs parallel exploration, or requires specialized focus
 
 2. BROADCAST - Send message to all agents

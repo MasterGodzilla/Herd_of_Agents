@@ -1,27 +1,42 @@
 """Basic test to verify agent system works"""
-import asyncio
-from agent_manager import AgentManager
+import time
+from herd_agents import AgentManager
 
-async def test_basic():
+def test_basic():
+    """Test basic agent spawning and communication using threading approach"""
+    print("Testing basic agent system...")
+    
+    # Create the agent manager
     manager = AgentManager()
     
-    # Create a simple genesis agent
-    genesis = await manager.create_genesis_agent(
-        mission="Test if basic spawning and communication works"
+    # Create a genesis agent with a simple mission
+    genesis = manager.create_genesis_agent(
+        mission="Spawn two agents, tell them to say hello to each other, and report back their mood for the day."
     )
     
-    # Start system
-    await manager.start()
+    print(f"Created genesis agent: {genesis.agent_id}")
+    print(f"Mission: {genesis.mission}")
     
-    # Let it run for a bit
-    await asyncio.sleep(10)
+    # Start the system (begins threading)
+    print("\nStarting agent system...")
+    manager.start()
     
-    # Print status
+    # Wait for convergence with timeout
+    print("Waiting for agents to complete their work...")
+    converged = manager.wait_for_convergence(timeout=30)
+    
+    if converged:
+        print("✅ System converged successfully!")
+    else:
+        print("⏰ System timed out - stopping anyway")
+    
+    # Print final status
+    print("\nFinal system state:")
     manager.print_status()
     
-    # Stop
-    await manager.stop()
+    # Stop the system
+    manager.stop()
+    print("✅ Test completed!")
 
 if __name__ == "__main__":
-    print("Testing basic agent system...")
-    asyncio.run(test_basic()) 
+    test_basic() 

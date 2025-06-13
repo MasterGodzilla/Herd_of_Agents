@@ -102,16 +102,6 @@ Set environment variables for LLM providers you want to use:
 - `OPENAI_API_KEY` for OpenAI
 - `ANTHROPIC_API_KEY` for Claude
 
-## Next Steps
-
-- Add tool integration (web search, etc)
-- Implement work stealing for efficiency  
-- Add persistence/checkpointing
-- Scale testing with 100+ agents
-- Implement context compression strategies
-- Add force interruption mechanism
-- Create specialized agent types through prompting
-
 ## Testing
 
 ```bash
